@@ -56,7 +56,7 @@ if prompt:
                 
                 # Call the agent backend with conversation history
                 result = asyncio.run(run_workflow(WorkflowInput(
-                    input_as_text=prompt,
+                    output_text=prompt,
                     conversation_history=conversation_history
                 )))
                 answer = result.get("final_answer", "No answer returned.")
@@ -68,17 +68,7 @@ if prompt:
                 st.session_state.history.append({"role": "assistant", "content": answer})
 
                 # Optionally show internal steps
-                with st.expander("Show internal steps"):
-                    steps = result.get("steps", {})
-                    if steps.get("query_rewrite_output"):
-                        st.markdown("**Query rewrite**")
-                        st.code(steps["query_rewrite_output"])
-                    if steps.get("classify_parsed") is not None:
-                        st.markdown("**Classification (parsed)**")
-                        st.json(steps["classify_parsed"])
-                    if steps.get("classify_output"):
-                        st.markdown("**Classification (raw)**")
-                        st.code(steps["classify_output"])
+               
             except Exception as e:
                 err_msg = f"Error while running agent: {e}"
                 st.error(err_msg)
