@@ -4,7 +4,6 @@ import asyncio
 from typing import Dict, Any, List
 from pydantic import BaseModel
 
-# Import your agent & tools modules (the snippet you got from ChatGPT)
 from agents import (
     FileSearchTool, WebSearchTool, CodeInterpreterTool,
     Agent, ModelSettings, TResponseInputItem, Runner, RunConfig
@@ -27,7 +26,7 @@ code_interpreter = CodeInterpreterTool(tool_config={
 class ClassifySchema(BaseModel):
     operating_procedure: str
 
-# --- Agent definitions from your snippet ---
+# --- Agent definitions ---
 query_rewrite = Agent(
     name="Query rewrite",
     instructions="Rewrite the user's question to be more specific and relevant to the knowledge base.",
@@ -68,23 +67,7 @@ external_fact_finding = Agent(
         "5. If significant discrepancies are present between sources, note these in your evidence.\n\n"
         "# Output Format\n\n"
         "- Short direct answer (1–3 sentences).\n"
-        "- Bullet point list of 2–5 supporting facts or data, each with source attribution in this format: [Source Name or URL]\n"
-        "- Example syntax:\n\n"
-        "Answer: [Concise answer.]\n\n"
-        "- Point 1 with supporting detail. [Source Name or URL]\n"
-        "- Point 2 with supporting detail. [Source Name or URL]\n"
-        "# Examples\n\n"
-        "Example Input: What is the current population of France?\n\n"
-        "Example Output:\n\n"
-        "Answer: As of 2023, the population of France is approximately 68 million people.\n\n"
-        "- The French National Institute of Statistics (INSEE) estimates the population at 68.0 million as of January 2023. [https://www.insee.fr/en/]\n"
-        "- The World Bank lists France's population as 67.9 million for 2022. [https://data.worldbank.org/indicator/SP.POP.TOTL?locations=FR]\n"
-        "- The United Nations gives a population estimate of 68 million for 2023. [https://population.un.org/wpp/]\n\n"
-        "# Notes\n\n"
-        "- Only summarize information from sources you have checked and verified during web search.\n"
-        "- If no definitive answer exists, state this clearly before listing available facts.\n"
-        "- Always attribute each bullet point to a specific source.\n"
-        "- Use sources with a high level of authority or credibility where possible"
+        "- Bullet point list of 2–5 supporting facts or data, each with source attribution.\n"
     ),
     model="gpt-5",
     tools=[web_search_preview, code_interpreter],
@@ -103,29 +86,48 @@ class WorkflowInput(BaseModel):
     input_as_text: str
     conversation_history: List[Dict[str, str]] = []
 
+def _msg_to_response_block(role: str, text: str) -> TResponseInputItem:
+    """
+    Convert a chat history message into a Responses-style input item with the
+    correct content block type for this SDK.
+    - user -> input_text
+    - assistant -> output_text
+    - system (if any) -> summary_text (or input_text if your SDK prefers)
+    """
+    text = text or ""
+    if role == "assistant":
+        content_block = {"type": "output_text", "text": text}
+    elif role == "system":
+        # Many SDKs accept summary_text for system context; if not, swap to input_text.
+        content_block = {"type": "summary_text", "text": text}
+    else:  # default to user
+        content_block = {"type": "input_text", "text": text}
+
+    return {
+        "role": role if role in ("user", "assistant", "system") else "user",
+        "content": [content_block],
+    }
+
 # Main workflow function
 async def run_workflow(workflow_input: WorkflowInput) -> Dict[str, Any]:
-    workflow = workflow_input.model_dump()
-    
-    # Convert conversation history to TResponseInputItem format
-    conversation_history: List[TResponseInputItem] = []
-    for msg in workflow.get("conversation_history", []):
-        conversation_history.append({
-            "role": msg["role"],
-            "content": [
-                {"type": "input_text", "text": msg["content"]}
-            ]
-        })
-    
-    # Add current user message
-    conversation_history.append({
-        "role": "user",
-        "content": [
-            {"type": "input_text", "text": workflow["input_as_text"]}
-        ]
-    })
+    wf = workflow_input.model_dump()
 
-    # Query rewrite
+    # Convert prior conversation into role-correct blocks
+    conversation_history: List[TResponseInputItem] = []
+    for msg in wf.get("conversation_history", []):
+        conversation_history.append(
+            _msg_to_response_block(msg.get("role", "user"), msg.get("content", ""))
+        )
+
+    # Append current user turn
+    conversation_history.append(
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": wf["input_as_text"]}],
+        }
+    )
+
+    # ---- Query rewrite ----
     query_rewrite_result_temp = await Runner.run(
         query_rewrite,
         input=[
@@ -133,16 +135,19 @@ async def run_workflow(workflow_input: WorkflowInput) -> Dict[str, Any]:
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": f"Original question: {workflow['input_as_text']}"}
-                ]
-            }
+                    {
+                        "type": "input_text",
+                        "text": f"Original question: {wf['input_as_text']}"
+                    }
+                ],
+            },
         ],
-        run_config=RunConfig(trace_metadata={"__trace_source__": "agent-builder"})
+        run_config=RunConfig(trace_metadata={"__trace_source__": "agent-builder"}),
     )
     conversation_history.extend([item.to_input_item() for item in query_rewrite_result_temp.new_items])
     query_rewrite_result = {"output_text": query_rewrite_result_temp.final_output_as(str)}
 
-    # Classify
+    # ---- Classify ----
     classify_result_temp = await Runner.run(
         classify,
         input=[
@@ -150,51 +155,68 @@ async def run_workflow(workflow_input: WorkflowInput) -> Dict[str, Any]:
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": f"Question: {query_rewrite_result['output_text']}"}
-                ]
-            }
+                    {
+                        "type": "input_text",
+                        "text": f"Question: {query_rewrite_result['output_text']}"
+                    }
+                ],
+            },
         ],
-        run_config=RunConfig(trace_metadata={"__trace_source__": "agent-builder"})
+        run_config=RunConfig(trace_metadata={"__trace_source__": "agent-builder"}),
     )
     conversation_history.extend([item.to_input_item() for item in classify_result_temp.new_items])
     classify_result = {
         "output_text": classify_result_temp.final_output.json(),
-        "output_parsed": classify_result_temp.final_output.model_dump()
+        "output_parsed": classify_result_temp.final_output.model_dump(),
     }
 
-    # Branch
-    if classify_result["output_parsed"].get("operating_procedure") == "q-and-a":
+    # ---- Branch ----
+    op = (classify_result["output_parsed"] or {}).get("operating_procedure", "")
+    if op == "q-and-a":
         internal_q_a_result_temp = await Runner.run(
             internal_q_a,
             input=[*conversation_history],
-            run_config=RunConfig(trace_metadata={"__trace_source__": "agent-builder"})
+            run_config=RunConfig(trace_metadata={"__trace_source__": "agent-builder"}),
         )
         conversation_history.extend([item.to_input_item() for item in internal_q_a_result_temp.new_items])
-        return {"final_answer": internal_q_a_result_temp.final_output_as(str), "path": "internal_q_a"}
-    elif classify_result["output_parsed"].get("operating_procedure") == "fact-finding":
+        return {
+            "final_answer": internal_q_a_result_temp.final_output_as(str),
+            "path": "internal_q_a",
+        }
+
+    if op == "fact-finding":
         external_fact_finding_result_temp = await Runner.run(
             external_fact_finding,
             input=[*conversation_history],
-            run_config=RunConfig(trace_metadata={"__trace_source__": "agent-builder"})
+            run_config=RunConfig(trace_metadata={"__trace_source__": "agent-builder"}),
         )
         conversation_history.extend([item.to_input_item() for item in external_fact_finding_result_temp.new_items])
-        return {"final_answer": external_fact_finding_result_temp.final_output_as(str), "path": "external_fact_finding"}
-    else:
-        agent_result_temp = await Runner.run(
-            agent,
-            input=[*conversation_history],
-            run_config=RunConfig(trace_metadata={"__trace_source__": "agent-builder"})
-        )
-        conversation_history.extend([item.to_input_item() for item in agent_result_temp.new_items])
-        return {"final_answer": agent_result_temp.final_output_as(str), "path": "agent"}
+        return {
+            "final_answer": external_fact_finding_result_temp.final_output_as(str),
+            "path": "external_fact_finding",
+        }
 
-# FastAPI app in module scope
+    # Fallback agent
+    agent_result_temp = await Runner.run(
+        agent,
+        input=[*conversation_history],
+        run_config=RunConfig(trace_metadata={"__trace_source__": "agent-builder"}),
+    )
+    conversation_history.extend([item.to_input_item() for item in agent_result_temp.new_items])
+    return {
+        "final_answer": agent_result_temp.final_output_as(str),
+        "path": "agent",
+    }
+
+
+# ---- FastAPI app ----
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Agent Backend")
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"]
 )
 
