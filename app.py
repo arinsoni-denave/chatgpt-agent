@@ -56,7 +56,7 @@ if prompt:
                 
                 # Call the agent backend with conversation history
                 result = asyncio.run(run_workflow(WorkflowInput(
-                    output_text=prompt,
+                    input_as_text=prompt,
                     conversation_history=conversation_history
                 )))
                 answer = result.get("final_answer", "No answer returned.")
