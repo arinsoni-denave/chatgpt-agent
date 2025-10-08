@@ -3,7 +3,6 @@
 import asyncio
 from typing import Dict, Any, List
 from pydantic import BaseModel
-from openai.types.shared.reasoning import Reasoning
 
 # Import your agent & tools modules (the snippet you got from ChatGPT)
 from agents import (
@@ -33,7 +32,7 @@ query_rewrite = Agent(
     name="Query rewrite",
     instructions="Rewrite the user's question to be more specific and relevant to the knowledge base.",
     model="gpt-5",
-    model_settings=ModelSettings(store=True, reasoning=Reasoning(effort="low", summary="auto"))
+    model_settings=ModelSettings(store=True)
 )
 
 classify = Agent(
@@ -41,7 +40,7 @@ classify = Agent(
     instructions="Determine whether the question should use the Q&A or fact-finding process.",
     model="gpt-5",
     output_type=ClassifySchema,
-    model_settings=ModelSettings(store=True, reasoning=Reasoning(effort="low", summary="auto"))
+    model_settings=ModelSettings(store=True)
 )
 
 internal_q_a = Agent(
@@ -49,7 +48,7 @@ internal_q_a = Agent(
     instructions="Answer the user's question using the knowledge tools you have on hand (file or web search). Be concise and answer succinctly, using bullet points and summarizing the answer up front",
     model="gpt-5",
     tools=[file_search],
-    model_settings=ModelSettings(store=True, reasoning=Reasoning(effort="low", summary="auto"))
+    model_settings=ModelSettings(store=True)
 )
 
 external_fact_finding = Agent(
@@ -89,7 +88,7 @@ external_fact_finding = Agent(
     ),
     model="gpt-5",
     tools=[web_search_preview, code_interpreter],
-    model_settings=ModelSettings(store=True, reasoning=Reasoning(effort="low", summary="auto"))
+    model_settings=ModelSettings(store=True)
 )
 
 agent = Agent(
@@ -102,18 +101,29 @@ agent = Agent(
 # Workflow input model
 class WorkflowInput(BaseModel):
     input_as_text: str
+    conversation_history: List[Dict[str, str]] = []
 
 # Main workflow function
 async def run_workflow(workflow_input: WorkflowInput) -> Dict[str, Any]:
     workflow = workflow_input.model_dump()
-    conversation_history: List[TResponseInputItem] = [
-        {
-            "role": "user",
+    
+    # Convert conversation history to TResponseInputItem format
+    conversation_history: List[TResponseInputItem] = []
+    for msg in workflow.get("conversation_history", []):
+        conversation_history.append({
+            "role": msg["role"],
             "content": [
-                {"type": "input_text", "text": workflow["input_as_text"]}
+                {"type": "input_text", "text": msg["content"]}
             ]
-        }
-    ]
+        })
+    
+    # Add current user message
+    conversation_history.append({
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": workflow["input_as_text"]}
+        ]
+    })
 
     # Query rewrite
     query_rewrite_result_temp = await Runner.run(

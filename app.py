@@ -46,8 +46,19 @@ if prompt:
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
-                # Call the agent backend
-                result = asyncio.run(run_workflow(WorkflowInput(input_as_text=prompt)))
+                # Prepare conversation history for backend
+                conversation_history = []
+                for msg in st.session_state.history:
+                    conversation_history.append({
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    })
+                
+                # Call the agent backend with conversation history
+                result = asyncio.run(run_workflow(WorkflowInput(
+                    input_as_text=prompt,
+                    conversation_history=conversation_history
+                )))
                 answer = result.get("final_answer", "No answer returned.")
                 route = result.get("path", "unknown").replace("_", " ")
 
